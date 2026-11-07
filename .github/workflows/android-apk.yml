@@ -1,0 +1,109 @@
+name: Android APK
+
+on:
+  workflow_dispatch:
+    inputs:
+      app_env:
+        description: APP_ENV (stable hides the PRE banner)
+        type: choice
+        default: stable
+        options:
+          - stable
+          - pre
+          - dev
+      abi:
+        description: Target ABI
+        type: choice
+        default: arm64
+        options:
+          - arm64
+          - arm
+          - amd64
+
+permissions:
+  contents: read
+
+jobs:
+  build-apk:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.27.1'
+          cache-dependency-path: core/go.sum
+
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v6
+
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version: '3.47.6'
+          cache: true
+
+      - name: Setup NDK
+        id: ndk
+        uses: nttld/setup-ndk@v1
+        with:
+          ndk-version: r28c
+          add-to-path: true
+          link-to-sdk: true
+
+      - name: Add Rust target
+        shell: bash
+        run: |
+          case "${{ inputs.abi }}" in
+            arm64) target=aarch64-linux-android ;;
+            arm) target=armv7-linux-androideabi ;;
+            amd64) target=x86_64-linux-android ;;
+          esac
+          rustup target add "$target"
+
+      - name: Fetch CA bundle
+        shell: bash
+        env:
+          CA_BUNDLE: cacert-2026-09-25.pem
+          CA_BUNDLE_SHA256: a41b5d356aea97a529fe27e0f7316d2f9d946d75927476cf9cf1b90637d00505
+        run: |
+          bundle=core/Clash.Meta/component/ca/ca-certificates.crt
+          curl -fsSL --retry 3 -o "$bundle" "https://curl.se/ca/$CA_BUNDLE"
+          echo "$CA_BUNDLE_SHA256  $bundle" | sha256sum -c -
+
+      - name: Get Flutter dependencies
+        run: flutter pub get
+
+      - name: Build APK
+        shell: bash
+        env:
+          ANDROID_NDK_HOME: ${{ steps.ndk.outputs.ndk-path }}
+        run: |
+          case "${{ inputs.abi }}" in
+            arm64) platform=android-arm64 ;;
+            arm) platform=android-arm ;;
+            amd64) platform=android-x64 ;;
+          esac
+          flutter build apk --release \
+            --target-platform "$platform" \
+            --dart-define=APP_ENV=${{ inputs.app_env }}
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: flclash-${{ inputs.abi }}-${{ inputs.app_env }}
+          path: build/app/outputs/flutter-apk/app-release.apk
+          if-no-files-found: error
+          retention-days: 14
