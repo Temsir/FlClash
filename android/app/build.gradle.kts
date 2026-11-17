@@ -33,7 +33,7 @@ android {
     }
 
     defaultConfig {
-        applicationId = "com.follow.net"
+        applicationId = "com.lang.podcast"
         minSdk = flutter.minSdkVersion
         targetSdk = libs.versions.targetSdk.get().toInt()
         versionCode = flutter.versionCode
