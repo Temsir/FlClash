@@ -2,7 +2,7 @@
 
 写给第一次进入这个 fork 的 agent 和人类维护者。仓库自带的 `AGENTS.md` 与 `.agents/*.md` 描述的是**上游**工程约定，仍然有效；这个文件只补充**本 fork 独有的、看起来像 bug 但其实是有意为之**的东西。
 
-先说结论：这里只有 3 处 fork 改动，都是为了「在 Android 上用自己的包名、自己出 APK」。除此之外的代码请当作上游代码对待，不要在 fork 里顺手「修复」它们。
+先说结论：fork 只有 4 处改动，都围绕 Android 的包名、显示名和出包方式（`com.lang.podcast` / JollyPodcast）。除此之外的代码请当作上游代码对待，不要在 fork 里顺手「修复」它们。
 
 ---
 
@@ -12,7 +12,7 @@
 |---|---|
 | fork | `Temsir/FlClash`（public，default branch `main`） |
 | upstream | `chen08209/FlClash` |
-| 改动范围 | 仅 Android 打包；桌面端未改 |
+| 改动范围 | Android 打包与显示名；桌面端打包和包名未改，只跟着改了显示名 |
 | 出包方式 | GitHub Actions 手动触发，不依赖本地环境 |
 
 本地可能还没有 `upstream` remote，需要时加一次：
@@ -26,18 +26,35 @@ git remote add upstream https://github.com/chen08209/FlClash.git
 
 ---
 
-## 2. 三处 fork 改动（不要"修正"）
+## 2. fork 改动（不要「修正」）
 
-### 2.1 只改了 `applicationId`
+### 2.1 包名只改了 `applicationId`
 
 `android/app/build.gradle.kts`：
 
 ```kotlin
-namespace = "com.follow.clash"   // 未改
-applicationId = "com.follow.net" // 唯一改动
+namespace = "com.follow.clash"       // 未改
+applicationId = "com.lang.podcast"   // 系统认的包名
 ```
 
-### 2.2 `namespace`、Dart `packageName`、Kotlin `Components.PACKAGE_NAME` 全部保持 `com.follow.clash`
+### 2.2 显示名是 JollyPodcast
+
+三处配套改动：
+
+- `android/common/src/main/res/values/strings.xml`：`app_name` = `JollyPodcast`，`service_channel_name` = `JollyPodcast Service`。启动器、最近任务、通知渠道和快捷设置磁贴都读这两个值。
+- `android/app/src/debug/AndroidManifest.xml`：debug 包的 label 是 `JollyPodcast Debug`。
+- `lib/common/constant.dart`：`const appName = 'JollyPodcast'`。
+
+`appName` 不只管标题栏，它还决定：
+
+- WebDAV 备份的根目录 `/${appName}`，原来是 `/FlClash`；
+- 导出的备份包、日志文件名前缀；
+- 配置里 `device` 的默认值（TUN 设备名）和 User-Agent 里的名称；
+- 桌面端托盘提示、窗口标题、关于页。
+
+所以换名之后，旧的 WebDAV 备份留在 `/FlClash` 下，新包从空目录开始。界面文案里的 FlClash 字样没跟着改，原因见 2.5。
+
+### 2.3 `namespace`、Dart `packageName`、Kotlin `Components.PACKAGE_NAME` 全部保持 `com.follow.clash`
 
 这些**故意**没跟着改，因为它们不是「应用标识」，而是：
 
@@ -48,7 +65,7 @@ applicationId = "com.follow.net" // 唯一改动
 
 **所以 `rg "com.follow.clash"` 搜出一堆结果是对的，不是漏改。**
 
-### 2.3 release 的签名是条件式的
+### 2.4 release 的签名是条件式的
 
 同一个 gradle 文件里：
 
@@ -65,8 +82,19 @@ if (hasReleaseSigning) {
 
 | 情况 | 包名 | 签名 |
 |---|---|---|
-| 有 keystore + 密码 | `com.follow.net` | 固定 release key |
-| 缺任意一项 | `com.follow.net.dev` | 本机/runner 自动生成的 debug key |
+| 有 keystore + 密码 | `com.lang.podcast` | 固定 release key |
+| 缺任意一项 | `com.lang.podcast.dev` | 本机/runner 自动生成的 debug key |
+
+### 2.5 还留着 FlClash 的痕迹（刻意）
+
+这次只把「系统眼里的身份」换掉了，APK 内部仍是上游代码：
+
+- Kotlin/Java 类的包路径都是 `com.follow.clash.*`，dex 里直接可读（原因见 2.3）；
+- 界面文案、免责声明、证书名里的 FlClash 来自 `lib/l10n`，由 ARB 生成，没有改；
+- 深链 scheme 仍是 `clash`、`clashmeta`、`flclash`；
+- 图标仍是上游默认图标，签名仍是原来的 release keystore。
+
+Android 系统只按 `applicationId`、label、图标、签名识别一个应用，前两项已经和上游无关，所以设置、通知、最近任务里都看不到 FlClash；应用自己的界面文案里还会出现。要连 APK 内容一起洗掉，得改 `namespace`、Java 包目录、gomobile 的 `-javapkg`、l10n 源文件和 scheme，属于另一量级的改动，目前没做。
 
 ---
 
@@ -130,8 +158,9 @@ workflow 在 `Build APK` 前把它们还原成 `android/app/keystore.jks` 和 `a
 
 - 2026-11-07 之前的 CI 产物没有固定 keystore，用的是 GitHub runner 每次随机生成的 debug key，**不同 run 之间签名不同，互相不能覆盖安装**。
 - 同一天加入固定 keystore 后，包名从 `com.follow.net.dev` 变成 `com.follow.net`，所以**跨越那次改动需要卸载一次旧包**（丢应用内数据）。此后同一签名的包可以一直覆盖升级。
+- 2026-11-17 包名改为 `com.lang.podcast`，显示名改为 JollyPodcast。包名变了，`com.follow.net` 的旧包同样要卸载一次，之后 `com.lang.podcast` 的包可以一直覆盖升级。
 - `versionCode` 来自 `pubspec.yaml` 的 `version: 0.9.3+2026110401` 的 build number（`2026110401`），上游发版会递增，升级条件正常。
-- 本地 `flutter build apk` 现在也会读取 `android/local.properties` 里的签名配置，产出与 CI 同签名的 `com.follow.net`。
+- 本地 `flutter build apk` 现在也会读取 `android/local.properties` 里的签名配置，产出与 CI 同签名的 `com.lang.podcast`。
 
 ---
 
@@ -143,12 +172,13 @@ git fetch upstream
 git merge upstream/main
 ```
 
-冲突面积很小，通常只出现在 `android/app/build.gradle.kts` 的 `applicationId` / `buildTypes` 一带。解冲突原则：**保留 `applicationId = "com.follow.net"` 和无签名时的 `.dev` 回退分支，其余全取上游。**
+冲突面积很小，通常只出现在 `android/app/build.gradle.kts` 的 `applicationId` / `buildTypes` 一带。解冲突原则：**保留 `applicationId = "com.lang.podcast"`、显示名改动和无签名时的 `.dev` 回退分支，其余全取上游。**
 
-合并后检查两件事：
+合并后检查三件事：
 
 1. `android/app/build.gradle.kts` 里签名逻辑是否被上游改写/挪动；
-2. `build.yaml` 顶部的 `FLUTTER_VERSION` / `GO_VERSION` / `NDK_VERSION`、以及 `CA_BUNDLE` 是否变了 → 同步到 `android-apk.yml`。
+2. `android/common/src/main/res/values/strings.xml` 的 `app_name` / `service_channel_name` 和 `lib/common/constant.dart` 的 `appName` 是否还是 JollyPodcast（上游改中文案会直接覆盖）；
+3. `build.yaml` 顶部的 `FLUTTER_VERSION` / `GO_VERSION` / `NDK_VERSION`、以及 `CA_BUNDLE` 是否变了 → 同步到 `android-apk.yml`。
 
 提交信息里带 `[skip ci]` 是刻意的：上游 `build.yaml` 会对任意分支的 push 触发一堆 dart/desktop 检查，在 fork 里纯属浪费 Actions 额度。
 
@@ -177,15 +207,19 @@ git merge upstream/main
 
 构建前记得 `$env:JAVA_HOME = "D:\Software\jdk\jdk-17.0.12"`；`android/gradlew.bat --stop` 可以停掉常驻 daemon。
 
+> 本机不做 Dart 侧验证。`flutter analyze`、`flutter test` 和本地构建都会先跑 `pub get`，往 `%LOCALAPPDATA%\Pub\Cache`、`C:\Users\temsir\go\pkg\mod`、`%LOCALAPPDATA%\go-build` 和 `~/.cargo/registry` 下载几百 MB 到几 GB 的依赖，用户明确不接受。要验证就推到 fork 上跑 `Android APK` workflow。
+
 ---
 
 ## 7. 快速排错
 
 | 现象 | 原因 |
 |---|---|
-| 包名是 `com.follow.net.dev` | 签名 secret 没配 / `local.properties` 缺项，走了 debug 回退 |
-| 新 APK 装不上，提示签名冲突 | 装的是 2026-11-07 之前的随机 debug 签名包，卸载一次即可 |
-| `rg "com.follow.clash"` 到处都有 | 正常，`namespace`/通道名/组件名故意保留 |
+| 包名是 `com.lang.podcast.dev` | 签名 secret 没配 / `local.properties` 缺项，走了 debug 回退 |
+| 新 APK 装不上，提示签名冲突或包名冲突 | 装的是 2026-11-07 之前的随机 debug 签名包，或 2026-11-17 之前 `com.follow.net` 的旧包，卸载一次即可 |
+| 应用名显示 FlClash | `strings.xml` 的 `app_name` 或 `constant.dart` 的 `appName` 被上游合并覆盖了 |
+| `rg "com.follow.clash"` 到处都有 | 正常，`namespace`/通道名/组件名故意保留，见 2.3 |
+| 反编译看到 `com.follow.clash` 类路径 | 正常，见 2.5 |
 | `git status` 显示 ahead | 用 SSH URL 推送未更新 HTTPS tracking ref，`git fetch origin` |
 | 改了 `.github/` 推不上去 | token 缺 `workflow` scope，改用 SSH |
 | CI 报 Flutter/Go/NDK 版本问题 | `android-apk.yml` 里钉的版本落后于上游 `build.yaml` |
@@ -195,10 +229,11 @@ git merge upstream/main
 
 ## 8. 关键文件
 
-- `android/app/build.gradle.kts` —— 唯一的包名改动 + 签名回退逻辑
+- `android/app/build.gradle.kts` —— 包名改动 + 签名回退逻辑
+- `android/common/src/main/res/values/strings.xml` —— 启动器和通知里的应用名
 - `android/app/keystore.jks` —— release keystore（git 忽略，`android/.gitignore` 的 `**/*.jks`）
 - `android/local.properties` —— 本机签名参数（git 忽略）
 - `.github/workflows/android-apk.yml` —— fork 的手动构建流程
 - `.github/workflows/build.yaml` —— 上游流程，维持原样
-- `lib/common/constant.dart` —— Dart 侧 `packageName` 常量（勿改）
+- `lib/common/constant.dart` —— Dart 侧 `appName`（显示名）和 `packageName`（通道前缀，勿改）
 - `android/common/src/main/java/com/follow/clash/common/Components.kt` —— `PACKAGE_NAME` 常量（勿改）
